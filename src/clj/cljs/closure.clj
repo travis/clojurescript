@@ -957,8 +957,8 @@
 
 (def get-upstream-deps (memoize get-upstream-deps*))
 
-(defn add-header [{:keys [hashbang target]} js]
-  (if (= :nodejs target)
+(defn add-header [{:keys [hashbang target no-header]} js]
+  (if (and (= :nodejs target) (not no-header))
     (str "#!" (or hashbang "/usr/bin/env node") "\n" js)
     js))
 
