@@ -908,6 +908,7 @@
         env/*compiler*
         (env/default-compiler-env opts))))
   ([source opts compiler-env]
+     (swap! compiler-env #(assoc % :target (:target opts)))
      (env/with-compiler-env compiler-env
        (let [ups-deps (get-upstream-deps)
              all-opts (assoc opts 
