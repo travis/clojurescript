@@ -1046,6 +1046,7 @@
         env/*compiler*
         (env/default-compiler-env))))
   ([source opts compiler-env]
+     (swap! compiler-env #(assoc % :target (:target opts)))
      (env/with-compiler-env compiler-env
        (let [opts (if (= :nodejs (:target opts))
                     (merge {:optimizations :simple} opts)
