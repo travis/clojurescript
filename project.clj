@@ -1,4 +1,4 @@
-(defproject com.tvachon/clojurescript "0.0-2080-1"
+(defproject org.clojure/clojurescript "0.0-SNAPSHOT"
   :description "ClojureScript compiler and core runtime library"
   :parent [org.clojure/pom.contrib "0.1.2"]
   :url "https://github.com/clojure/clojurescript"
