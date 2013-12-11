@@ -254,11 +254,11 @@
              (assoc (cljs.core.ObjMap. nil (array) (js-obj)) :foo 5)))
 
   (assert (= "\"asdf\" \"asdf\"" (pr-str "asdf" "asdf")))
-  (assert (= "[1 true {:a 2, :b #\"x\\\"y\"} #<Array [3, 4]>]"
+  (assert (= "[1 true {:a 2, :b #\"x\\\"y\"} #js [3 4]]"
              (pr-str [1 true {:a 2 :b #"x\"y"} (array 3 4)])))
 
   (assert (= "\"asdf\"\n" (prn-str "asdf")))
-  (assert (= "[1 true {:a 2, :b 42} #<Array [3, 4]>]\n"
+  (assert (= "[1 true {:a 2, :b 42} #js [3 4]]\n"
              (prn-str [1 true {:a 2 :b 42} (array 3 4)])))
 
   (assert (= "asdf" (print-str "asdf")))
@@ -2015,6 +2015,17 @@
   ;; CLJS-584
 
   (assert (= (count {some-x :foo some-y :bar}) 1))
+
+  ;; CLJS-717
+
+  (assert (array? #js [1 2 3]))
+  (assert (= (alength #js [1 2 3]) 3))
+  (assert (= (seq #js [1 2 3]) (seq [1 2 3])))
+  (assert (= (set (js-keys #js {:foo "bar" :baz "woz"})) #{"foo" "baz"}))
+  (assert (= (aget #js {:foo "bar"} "foo") "bar"))
+  (assert (= (aget #js {"foo" "bar"} "foo") "bar"))
+  (assert (array? (aget #js {"foo" #js [1 2 3]} "foo")))
+  (assert (= (seq (aget #js {"foo" #js [1 2 3]} "foo")) '(1 2 3)))
 
   :ok
   )

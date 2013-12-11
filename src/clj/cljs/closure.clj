@@ -45,6 +45,7 @@
            java.net.URL
            java.util.logging.Level
            java.util.jar.JarFile
+           java.util.List
            com.google.common.collect.ImmutableList
            com.google.javascript.jscomp.CompilerOptions
            com.google.javascript.jscomp.CompilationLevel
@@ -54,6 +55,8 @@
            com.google.javascript.jscomp.JSSourceFile
            com.google.javascript.jscomp.Result
            com.google.javascript.jscomp.JSError
+           com.google.javascript.jscomp.CheckLevel
+           com.google.javascript.jscomp.DiagnosticGroups
            com.google.javascript.jscomp.CommandLineRunner))
 
 (defmacro ^:private debug-prn
@@ -91,7 +94,39 @@
     (set! (.printInputDelimiter compiler-options)
       (:print-input-delimiter opts))))
 
-(defn make-options
+(def check-level
+  {:error CheckLevel/ERROR
+   :warning CheckLevel/WARNING
+   :off CheckLevel/OFF})
+
+(def warning-types
+  {:access-controls DiagnosticGroups/ACCESS_CONTROLS
+   :ambiguous-function-decl DiagnosticGroups/AMBIGUOUS_FUNCTION_DECL
+   :debugger-statement-present DiagnosticGroups/DEBUGGER_STATEMENT_PRESENT
+   :check-regexp DiagnosticGroups/CHECK_REGEXP
+   :check-types DiagnosticGroups/CHECK_TYPES
+   :check-useless-code DiagnosticGroups/CHECK_USELESS_CODE
+   :check-variables DiagnosticGroups/CHECK_VARIABLES
+   :const DiagnosticGroups/CONST
+   :constant-property DiagnosticGroups/CONSTANT_PROPERTY
+   :deprecated DiagnosticGroups/DEPRECATED
+   :duplicate-message DiagnosticGroups/DUPLICATE_MESSAGE
+   :es5-strict DiagnosticGroups/ES5_STRICT
+   :externs-validation DiagnosticGroups/EXTERNS_VALIDATION
+   :fileoverview-jsdoc DiagnosticGroups/FILEOVERVIEW_JSDOC
+   :global-this DiagnosticGroups/GLOBAL_THIS
+   :internet-explorer-checks DiagnosticGroups/INTERNET_EXPLORER_CHECKS
+   :invalid-casts DiagnosticGroups/INVALID_CASTS
+   :missing-properties DiagnosticGroups/MISSING_PROPERTIES
+   :non-standard-jsdoc DiagnosticGroups/NON_STANDARD_JSDOC
+   :strict-module-dep-check DiagnosticGroups/STRICT_MODULE_DEP_CHECK
+   :tweaks DiagnosticGroups/TWEAKS
+   :undefined-names DiagnosticGroups/UNDEFINED_NAMES
+   :undefined-variables DiagnosticGroups/UNDEFINED_VARIABLES
+   :unknown-defines DiagnosticGroups/UNKNOWN_DEFINES
+   :visiblity DiagnosticGroups/VISIBILITY})
+
+(defn ^CompilerOptions make-options
   "Create a CompilerOptions object and set options from opts map."
   [opts]
   (let [level (case (:optimizations opts)
@@ -100,6 +135,18 @@
                 :simple CompilationLevel/SIMPLE_OPTIMIZATIONS)
         compiler-options (doto (CompilerOptions.)
                            (.setCodingConvention (ClosureCodingConvention.)))]
+    (doseq [[key val] (:closure-defines opts)]
+      (let [key (name key)]
+        (cond
+          (string? val) (.setDefineToStringLiteral compiler-options key val)
+          (integer? val) (.setDefineToIntegerLiteral compiler-options key val)
+          (float? val) (.setDefineToDoubleLiteral compiler-options key val)
+          (or (true? val)
+              (false? val)) (.setDefineToBooleanLiteral compiler-options key val)
+          :else (println "value for" key "must be string, int, float, or bool"))))
+    (doseq [[type level] (:closure-warnings opts)]
+      (. compiler-options
+        (setWarningLevel (type warning-types) (level check-level))))
     (when (contains? opts :source-map)
       (set! (.sourceMapOutputPath compiler-options)
             (:source-map opts))
@@ -126,8 +173,8 @@
     (map #(io/resource %)
          (filter #(do
                     (and 
-                      (.startsWith % lib-path)
-                      (.endsWith % ".js")))
+                      (.startsWith ^String % lib-path)
+                      (.endsWith ^String % ".js")))
                  (jar-entry-names jar-path)))))
 (declare to-url)
 (defn find-js-fs
@@ -135,13 +182,13 @@
   [path]
   (let [file (io/file path)]
     (when (.exists file)
-      (map to-url (filter #(.endsWith (.getName %) ".js") (file-seq (io/file path)))))))
+      (map to-url (filter #(.endsWith ^String (.getName ^File %) ".js") (file-seq (io/file path)))))))
 
 
 (defn find-js-classpath 
   "finds all js files on the classpath matching the path provided"
   [path]
-  (let [process-entry #(if (.endsWith % ".jar")
+  (let [process-entry #(if (.endsWith ^String % ".jar")
                            (find-js-jar % path)
                            (find-js-fs (str % "/" path)))
         cpath-list (let [sysp (System/getProperty  "java.class.path" )]
@@ -541,13 +588,13 @@
   "Create an index of Google dependencies by namespace and file name."
   []
   (letfn [(parse-list [s] (when (> (count s) 0)
-                            (-> (.substring s 1 (dec (count s)))
+                            (-> (.substring ^String s 1 (dec (count s)))
                                 (string/split #"'\s*,\s*'"))))]
     (->> (line-seq (io/reader (io/resource "goog/deps.js")))
          (map #(re-matches #"^goog\.addDependency\(['\"](.*)['\"],\s*\[(.*)\],\s*\[(.*)\]\);.*" %))
          (remove nil?)
          (map #(drop 1 %))
-         (remove #(.startsWith (first %) "../../third_party"))
+         (remove #(.startsWith ^String (first %) "../../third_party"))
          (map #(hash-map :file (str "goog/"(first %))
                          :provides (parse-list (second %))
                          :requires (parse-list (last %))
@@ -655,6 +702,16 @@
                    required-cljs
                    inputs)))))
 
+(defn preamble-from-paths [paths]
+  (str (apply str (map #(slurp (io/file %)) paths)) "\n"))
+
+(defn make-preamble [{:keys [target preamble hashbang]}]
+  (if preamble
+    (preamble-from-paths preamble)
+    (if (= :nodejs target)
+      (str "#!" (or hashbang "/usr/bin/env node") "\n")
+      "")))
+
 (comment
   ;; add dependencies to literal js
   (add-dependencies {} "goog.provide('test.app');\ngoog.require('cljs.core');")
@@ -709,13 +766,15 @@
   "Use the Closure Compiler to optimize one or more JavaScript files."
   [opts & sources]
   (let [closure-compiler (make-closure-compiler)
-        externs (load-externs opts)
+        ^List externs (load-externs opts)
         compiler-options (make-options opts)
         sources (if (= :whitespace (:optimizations opts))
                   (cons "var CLOSURE_NO_DEPS = true;" sources)
                   sources)
-        inputs (map #(js-source-file (javascript-name %) %) sources)
-        result ^Result (.compile closure-compiler externs inputs compiler-options)]
+        ^List inputs (map #(js-source-file (javascript-name %) %) sources)
+        result ^Result (.compile closure-compiler externs inputs compiler-options)
+        preamble (make-preamble opts)
+        preamble-line-count (- (count (.split #"\r?\n" preamble -1)) 1)]
     (if (.success result)
       ;; compiler.getSourceMap().reset()
       (let [source (.toSource closure-compiler)]
@@ -758,7 +817,8 @@
                       merged)))
                 (spit (io/file name)
                       (sm/encode merged
-                                 {:lines (+ (:lineCount sm-json) 2)
+                                 {:preamble-line-count preamble-line-count
+                                  :lines (+ (:lineCount sm-json) preamble-line-count 2)
                                   :file (:file sm-json)
                                   :output-dir (output-directory opts)
                                   :source-map-path (:source-map-path opts)
@@ -957,10 +1017,8 @@
 
 (def get-upstream-deps (memoize get-upstream-deps*))
 
-(defn add-header [{:keys [hashbang target]} js]
-  (if (= :nodejs target)
-    (str "#!" (or hashbang "/usr/bin/env node") "\n" js)
-    js))
+(defn add-header [opts js]
+  (str (make-preamble opts) js))
 
 (defn add-wrapper [{:keys [output-wrapper] :as opts} js]
   (if output-wrapper

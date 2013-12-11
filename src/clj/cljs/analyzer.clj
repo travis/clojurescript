@@ -6,8 +6,6 @@
 ;   the terms of this license.
 ;   You must not remove this notice, or any other, from this software.
 
-(set! *warn-on-reflection* true)
-
 (ns cljs.analyzer
   (:refer-clojure :exclude [macroexpand-1])
   (:require [clojure.java.io :as io]
@@ -18,7 +16,10 @@
             [clojure.tools.reader :as reader]
             [clojure.tools.reader.reader-types :as readers])
   (:import java.lang.StringBuilder
-           java.io.File))
+           java.io.File
+           [cljs.tagged_literals JSValue]))
+
+(set! *warn-on-reflection* true)
 
 (def ^:dynamic *cljs-ns* 'cljs.user)
 (def ^:dynamic *cljs-file* nil)
@@ -331,9 +332,16 @@
                  lb (-> env :locals prefix)]
              (if lb
                {:name (symbol (str (:name lb) suffix))}
-               (merge (get-in @env/*compiler* [::namespaces prefix :defs (symbol suffix)])
-                 {:name (if (= "" prefix) (symbol suffix) (symbol (str prefix) suffix))
-                  :ns prefix})))
+               (let [cur-ns (-> env :ns :name)]
+                 (if-let [full-ns (get-in @env/*compiler* [::namespaces cur-ns :imports prefix])]
+                   {:name (symbol (str full-ns) suffix)}
+                   (if-let [info (get-in @env/*compiler* [::namespaces cur-ns :defs prefix])]
+                     (merge info
+                       {:name (symbol (str cur-ns) (str sym))
+                        :ns cur-ns})
+                     (merge (get-in @env/*compiler* [::namespaces prefix :defs (symbol suffix)])
+                       {:name (if (= "" prefix) (symbol suffix) (symbol (str prefix) suffix))
+                        :ns prefix}))))))
 
            (get-in @env/*compiler* [::namespaces (-> env :ns :name) :uses sym])
            (let [full-ns (get-in @env/*compiler* [::namespaces (-> env :ns :name) :uses sym])]
@@ -352,8 +360,8 @@
              (when confirm
                (confirm env full-ns sym))
              (merge (get-in @env/*compiler* [::namespaces full-ns :defs sym])
-                    {:name (symbol (str full-ns) (str sym))
-                     :ns full-ns})))))))
+               {:name (symbol (str full-ns) (str sym))
+                :ns full-ns})))))))
 
 (defn resolve-existing-var [env sym]
   (if-not (-> sym meta ::no-resolve)
@@ -428,22 +436,26 @@
                     (infer-tag env
                       (assoc (find-matching-method f (:args e)) :op :method))
                     'any))
-      :if (let [then-tag (infer-tag env (:then e))
-                else-tag (infer-tag env (:else e))]
-            (cond
-              (or (= then-tag else-tag)
-                  (= else-tag 'ignore)) then-tag
-              (= then-tag 'ignore) else-tag
-              ;; TODO: temporary until we move not-native -> clj - David
-              (and (or ('#{clj not-native} then-tag) (type? env then-tag))
-                   (or ('#{clj not-native} else-tag) (type? env else-tag)))
-              'clj
-              :else
-              (if (every? '#{boolean seq} [then-tag else-tag])
-                'seq
-                (let [then-tag (if (set? then-tag) then-tag #{then-tag})
-                      else-tag (if (set? else-tag) else-tag #{else-tag})]
-                  (into then-tag else-tag)))))
+      :if (let [{{:keys [op form]} :test} e
+                then-tag (infer-tag env (:then e))]
+            (if (and (= op :constant)
+                     (not (#{nil false} form)))
+              then-tag
+              (let [else-tag (infer-tag env (:else e))]
+                (cond
+                  (or (= then-tag else-tag)
+                    (= else-tag 'ignore)) then-tag
+                  (= then-tag 'ignore) else-tag
+                  ;; TODO: temporary until we move not-native -> clj - David
+                  (and (or ('#{clj not-native} then-tag) (type? env then-tag))
+                    (or ('#{clj not-native} else-tag) (type? env else-tag)))
+                  'clj
+                  :else
+                  (if (every? '#{boolean seq} [then-tag else-tag])
+                    'seq
+                    (let [then-tag (if (set? then-tag) then-tag #{then-tag})
+                           else-tag (if (set? else-tag) else-tag #{else-tag})]
+                      (into then-tag else-tag)))))))
       :constant (case (:form e)
                   true 'boolean
                   false 'boolean
@@ -734,22 +746,41 @@
   (let [n->fexpr (into {} (map (juxt first second) (partition 2 bindings)))
         names    (keys n->fexpr)
         context  (:context env)
+        ;; first pass to collect information for recursive references
         [meth-env bes]
         (reduce (fn [[{:keys [locals] :as env} bes] n]
-                  (let [be {:name   n
-                            :line (get-line n env)
-                            :column (get-col n env)
-                            :ret-tag (-> n meta :tag)
-                            :local  true
-                            :shadow (locals n)}]
+                  (let [ret-tag (-> n meta :tag)
+                        fexpr (no-warn (analyze env (n->fexpr n)))
+                        be (cond->
+                             {:name n
+                              :fn-var true
+                              :line (get-line n env)
+                              :column (get-col n env)
+                              :local true
+                              :shadow (locals n)
+                              :variadic (:variadic fexpr)
+                              :max-fixed-arity (:max-fixed-arity fexpr)
+                              :method-params (map :params (:methods fexpr))
+                              :methods (:methods fexpr)}
+                             ret-tag (assoc :ret-tag ret-tag))]
                     [(assoc-in env [:locals n] be)
                      (conj bes be)]))
                 [env []] names)
         meth-env (assoc meth-env :context :expr)
-        bes (vec (map (fn [{:keys [name shadow] :as be}]
-                        (let [env (assoc-in meth-env [:locals name] shadow)]
-                          (assoc be :init (analyze env (n->fexpr name)))))
-                      bes))
+        ;; the real pass
+        [meth-env bes]
+        (reduce (fn [[meth-env bes] {:keys [name shadow] :as be}]
+                  (let [env (assoc-in meth-env [:locals name] shadow)
+                        fexpr (analyze env (n->fexpr name))
+                        be' (assoc be
+                              :init fexpr
+                              :variadic (:variadic fexpr)
+                              :max-fixed-arity (:max-fixed-arity fexpr)
+                              :method-params (map :params (:methods fexpr))
+                              :methods (:methods fexpr))]
+                    [(assoc-in env [:locals name] be')
+                     (conj bes be')]))
+          [meth-env []] bes)
         expr (analyze (assoc meth-env :context (if (= :expr context) :return context)) `(do ~@exprs))]
     {:env env :op :letfn :bindings bes :expr expr :form form
      :children (conj (vec (map :init bes)) expr)}))
@@ -1179,7 +1210,11 @@
                        (fn [t]
                          (or (nil? t)
                              (and (symbol? t) ('#{any number} t))
-                             (and (set? t) (set/subset? t '#{any number nil}))))
+                             ;; TODO: type inference is not strong enough to detect that
+                             ;; when functions like first won't return nil, so variadic
+                             ;; numeric functions like cljs.core/< would produce a spurious
+                             ;; warning without this - David
+                             (and (set? t) (set/subset? t '#{any number nil clj-nil}))))
                        types)
              (warning :invalid-arithmetic env
                {:js-op (-> form meta :js-op)
@@ -1349,9 +1384,26 @@
         items (disallowing-recur (vec (map #(analyze expr-env %) form)))]
     (analyze-wrap-meta {:op :set :env env :form form :items items :children items :tag 'cljs.core/ISet})))
 
+(defn analyze-js-value
+  [env ^JSValue form]
+  (let [val (.val form)
+        expr-env (assoc env :context :expr)
+        items (if (map? val)
+                (zipmap (keys val)
+                        (disallowing-recur (doall (map #(analyze expr-env %) (vals val)))))
+                (disallowing-recur (doall (map #(analyze expr-env %) val))))]
+    {:op :js-value
+     :js-type (if (map? val) :object :array)
+     :env env
+     :form form
+     :items items
+     :children items
+     :tag (if (map? val) 'object 'array)}))
+
 (defn analyze-wrap-meta [expr]
+
   (let [form (:form expr)
-        m (dissoc (meta form) :line :column :end-column :end-line)]
+        m (dissoc (meta form) :line :column :end-column :end-line :source)]
     (if (seq m)
       (let [env (:env expr) ; take on expr's context ourselves
             expr (assoc-in expr [:env :context] :expr) ; change expr to :expr
@@ -1366,7 +1418,7 @@
     (assoc ast :tag tag)
     ast))
 
-(def ^:dynamic *passes* [infer-type])
+(def ^:dynamic *passes* nil)
 
 (defn analyze
   "Given an environment, a map containing {:locals (mapping of names to bindings), :context
@@ -1392,15 +1444,18 @@
                 (vector? form) (analyze-vector env form)
                 (set? form) (analyze-set env form)
                 (keyword? form) (analyze-keyword env form)
+                (instance? JSValue form) (analyze-js-value env form)
                 (= form ()) (analyze-list env form)
                 :else
                 (let [tag (cond
+                            (nil? form)    'clj-nil
                             (number? form) 'number
                             (string? form) 'string
                             (true? form)   'boolean
                             (false? form)  'boolean)]
-                  {:op :constant :env env :form form :tag tag}))))
-          *passes*)))))
+                  (cond-> {:op :constant :env env :form form}
+                    tag (assoc :tag tag))))))
+          (or *passes* [infer-type]))))))
 
 (defn- source-path
   "Returns a path suitable for providing to tools.reader as a 'filename'."
@@ -1415,12 +1470,15 @@
 argument, which the reader will use in any emitted errors."
   ([f] (forms-seq f (source-path f)))
   ([f filename]
-     (let [rdr (readers/indexing-push-back-reader (java.io.PushbackReader. (io/reader f)) 1 filename)
+     (let [rdr (readers/indexing-push-back-reader
+                 (java.io.PushbackReader. (io/reader f)) 1 filename)
+           data-readers tags/*cljs-data-readers*
            forms-seq*
            (fn forms-seq* []
              (lazy-seq
               (let [eof-sentinel (Object.)
                     form (binding [*ns* (create-ns *cljs-ns*)
+                                   reader/*data-readers* data-readers
                                    reader/*alias-map*
                                    (apply merge
                                           ((juxt :requires :require-macros)

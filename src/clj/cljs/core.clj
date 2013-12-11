@@ -79,7 +79,7 @@
                                      seen-rest? false]
                            (if (seq bs)
                              (core/let [firstb (first bs)]
-                               (cond
+                               (core/cond
                                  (= firstb '&) (recur (pb ret (second bs) (core/list `nthnext gvec n))
                                                       n
                                                       (nnext bs)
@@ -118,7 +118,7 @@
                                                    (core/list `get gmap bk)))
                                       (next bes)))
                              ret))))]
-                    (cond
+                    (core/cond
                       (core/symbol? b) (-> bvec (conj b) (conj v))
                       (vector? b) (pvec bvec b v)
                       (map? b) (pmap bvec b v)
@@ -280,6 +280,9 @@
   (if (= :nodejs (:target @env/*compiler*))
     (bool-expr `(Array/isArray ~x))
     (bool-expr (core/list 'js* "~{} instanceof Array" x))))
+
+(defmacro object? [x]
+  (bool-expr (core/list 'js* "~{}.constructor === Object" x)))
 
 (defmacro string? [x]
   (bool-expr (core/list 'js* "typeof ~{} === 'string'" x)))
@@ -1084,7 +1087,7 @@
                (let [[[a b c :as clause] more]
                        (split-at (if (= :>> (second args)) 3 2) args)
                        n (count clause)]
-                 (cond
+                 (core/cond
                   (= 0 n) `(throw (js/Error. (core/str "No matching clause: " ~expr)))
                   (= 1 n) a
                   (= 2 n) `(if (~pred ~a ~expr)
@@ -1112,7 +1115,7 @@
                                                          cljs.analyzer/*cljs-file*)))))
                            (assoc m test expr)))
         pairs (reduce (fn [m [test expr]]
-                        (cond
+                        (core/cond
                          (seq? test) (reduce (fn [m test]
                                                (let [test (if (core/symbol? test)
                                                             (core/list 'quote test)
@@ -1168,7 +1171,7 @@
                     (let [giter (gensym "iter__")
                           gxs (gensym "s__")
                           do-mod (fn do-mod [[[k v :as pair] & etc]]
-                                   (cond
+                                   (core/cond
                                      (= k :let) `(let ~v ~(do-mod etc))
                                      (= k :while) `(when ~v ~(do-mod etc))
                                      (= k :when) `(if ~v
@@ -1194,7 +1197,7 @@
                         (let [gi (gensym "i__")
                               gb (gensym "b__")
                               do-cmod (fn do-cmod [[[k v :as pair] & etc]]
-                                        (cond
+                                        (core/cond
                                           (= k :let) `(let ~v ~(do-cmod etc))
                                           (= k :while) `(when ~v ~(do-cmod etc))
                                           (= k :when) `(if ~v
@@ -1249,7 +1252,7 @@
                        steppair (step recform (nnext exprs))
                        needrec (steppair 0)
                        subform (steppair 1)]
-                   (cond
+                   (core/cond
                      (= k :let) [needrec `(let ~v ~subform)]
                      (= k :while) [false `(when ~v
                                             ~subform
@@ -1296,7 +1299,10 @@
 
 (defmacro make-array
   [size]
-  (vary-meta `(js/Array. ~size)
+  (vary-meta
+    (if (core/number? size)
+      `(array ~@(take size (repeat nil)))
+      `(js/Array. ~size))
     assoc :tag 'array))
 
 (defmacro list
@@ -1318,7 +1324,7 @@
 (defmacro array-map
   ([] `cljs.core.PersistentArrayMap.EMPTY)
   ([& kvs]
-    (cond
+    (core/cond
       (core/> (count kvs) 16)
       `(hash-map ~@kvs)
       

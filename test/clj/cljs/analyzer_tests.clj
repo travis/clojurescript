@@ -74,10 +74,45 @@
 
 (deftest if-inference
   (is (= (e/with-compiler-env test-cenv
-           (:tag (a/analyze test-env '(if true "foo" 1))))
+           (:tag (a/analyze test-env '(if x "foo" 1))))
          '#{number string})))
 
+(deftest fn-inference
+  (is (= (e/with-compiler-env test-cenv
+           (:tag (a/analyze test-env
+                   '(let [x (fn ([a] 1) ([a b] "foo") ([a b & r] ()))]
+                      (x :one)))))
+        'number))
+  (is (= (e/with-compiler-env test-cenv
+           (:tag (a/analyze test-env
+                   '(let [x (fn ([a] 1) ([a b] "foo") ([a b & r] ()))]
+                      (x :one :two)))))
+        'string))
+  (is (= (e/with-compiler-env test-cenv
+           (:tag (a/analyze test-env
+                   '(let [x (fn ([a] 1) ([a b] "foo") ([a b & r] ()))]
+                      (x :one :two :three)))))
+        'cljs.core/IList)))
+
 (deftest lib-inference
+  (is (= (e/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(+ 1 2))))
+         'number))
+  (is (= (e/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(alength (array)))))
+         'number))
+  (is (= (e/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(aclone (array)))))
+         'array))
+  (is (= (e/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(count [1 2 3]))))
+         'number))
+  (is (= (e/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(into-array [1 2 3]))))
+         'array))
+  (is (= (e/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(js-obj))))
+         'object))
   (is (= (e/with-compiler-env test-cenv
            (:tag (a/analyze test-env '(-conj [] 1))))
          'clj))
@@ -90,3 +125,37 @@
   (is (= (e/with-compiler-env test-cenv
            (:tag (a/analyze test-env '(dissoc {:foo :bar} :foo))))
          'clj)))
+
+(deftest test-always-true-if
+  (is (= (e/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(if 1 2 "foo"))))
+         'number)))
+
+;; will only work if the previous test works
+(deftest test-count
+  (is (= (cljs.env/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(count []))))
+         'number)))
+
+(deftest test-numeric
+  (is (= (cljs.env/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(dec x))))
+         'number))
+  (is (= (cljs.env/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(int x))))
+         'number))
+  (is (= (cljs.env/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(unchecked-int x))))
+         'number))
+  (is (= (cljs.env/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(mod x y))))
+         'number))
+  (is (= (cljs.env/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(quot x y))))
+         'number))
+  (is (= (cljs.env/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(rem x y))))
+         'number))
+  (is (= (cljs.env/with-compiler-env test-cenv
+           (:tag (a/analyze test-env '(bit-count n))))
+         'number)))

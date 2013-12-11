@@ -181,6 +181,7 @@
   (let [lines (atom [[]])
         names->idx (atom {})
         name-idx (atom 0)
+        preamble-lines (take (or (:preamble-line-count opts) 0) (repeat []))
         info->segv
         (fn [info source-idx line col]
           (let [segv [(:gcol info) source-idx line col]]
@@ -211,21 +212,24 @@
         (doseq [[col infos] cols]
           (encode-cols infos source-idx line col))))
     (let [source-map-file-contents
-          {"version" 3
-           "file" (:file opts)
-           "sources" (into []
-                           (let [paths (keys m)
-                                 f (if (or (:output-dir opts) (:source-map-path opts))
-                                     #(relativize-path % opts)
-                                     #(last (string/split % #"/")))]
-                             (map f paths)))
-           "lineCount" (:lines opts)
-           "mappings" (->> (lines->segs @lines)
-                           (map #(string/join "," %))
-                           (string/join ";"))
-           "names" (into []
-                         (map (set/map-invert @names->idx)
-                              (range (count @names->idx))))}]
+          (cond-> {"version" 3
+                   "file" (:file opts)
+                   "sources" (into []
+                                   (let [paths (keys m)
+                                         f (if (or (:output-dir opts)
+                                                   (:source-map-path opts))
+                                             #(relativize-path % opts)
+                                             #(last (string/split % #"/")))]
+                                     (map f paths)))
+                   "lineCount" (:lines opts)
+                   "mappings" (->> (lines->segs (concat preamble-lines @lines))
+                                   (map #(string/join "," %))
+                                   (string/join ";"))
+                   "names" (into []
+                                 (map (set/map-invert @names->idx)
+                                      (range (count @names->idx))))}
+                  (:sources-content opts)
+                  (assoc "sourcesContent" (:sources-content opts)))]
       (with-out-str
         (json/pprint
          source-map-file-contents

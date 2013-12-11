@@ -35,6 +35,7 @@
 (def ^:dynamic *print-meta* false)
 (def ^:dynamic *print-dup* false)
 (def ^:dynamic *print-length* nil)
+(def ^:dynamic *print-level* nil)
 
 (defn- pr-opts []
   {:flush-on-newline *flush-on-newline*
@@ -86,6 +87,9 @@
 
 (defn ^boolean array? [x]
   (cljs.core/array? x))
+
+(defn ^boolean object? [x]
+  (cljs.core/object? x))
 
 (defn ^boolean number? [n]
   (cljs.core/number? n))
@@ -514,8 +518,11 @@
   structures define -equiv (and thus =) as a value, not an identity,
   comparison."
   ([x] true)
-  ([x y] (or (identical? x y)
-             ^boolean (-equiv x y)))
+  ([x y]
+    (if (nil? x)
+      (nil? y)
+      (or (identical? x y)
+        ^boolean (-equiv x y))))
   ([x y & more]
      (if (= x y)
        (if (next more)
@@ -527,40 +534,8 @@
 (declare hash-map list equiv-sequential)
 
 (extend-type nil
-  IEquiv
-  (-equiv [_ o] (nil? o))
-
   ICounted
-  (-count [_] 0)
-
-  IEmptyableCollection
-  (-empty [_] nil)
-
-  INext
-  (-next [_] nil)
-
-  IMap
-  (-dissoc [_ k] nil)
-
-  ISet
-  (-disjoin [_ v] nil)
-
-  IStack
-  (-peek [_] nil)
-  (-pop [_] nil)
-
-  IMeta
-  (-meta [_] nil)
-
-  IWithMeta
-  (-with-meta [_ meta] nil)
-
-  IKVReduce
-  (-kv-reduce [_ f init]
-    init)
-
-  IHash
-  (-hash [o] 0))
+  (-count [_] 0))
 
 ;; TODO: we should remove this and handle date equality checking
 ;; by some other means, probably by adding a new primitive type
@@ -852,15 +827,16 @@ reduces them without incurring seq initialization"
 (defn empty
   "Returns an empty collection of the same category as coll, or nil"
   [coll]
-  (-empty coll))
+  (when-not (nil? coll)
+    (-empty coll)))
 
-(defn- ^number accumulating-seq-count [coll]
+(defn- accumulating-seq-count [coll]
   (loop [s (seq coll) acc 0]
     (if (counted? s) ; assumes nil is counted, which it currently is
       (+ acc (-count s))
       (recur (next s) (inc acc)))))
 
-(defn ^number count
+(defn count
   "Returns the number of items in the collection. (count nil) returns
   0.  Also works on strings, arrays, and Maps"
   [coll]
@@ -1022,10 +998,11 @@ reduces them without incurring seq initialization"
   ([coll k]
      (-dissoc coll k))
   ([coll k & ks]
-     (let [ret (dissoc coll k)]
-       (if ks
-         (recur ret (first ks) (next ks))
-         ret))))
+    (when-not (nil? coll)
+      (let [ret (dissoc coll k)]
+        (if ks
+          (recur ret (first ks) (next ks))
+          ret)))))
 
 (defn ^boolean fn? [f]
   (or ^boolean (goog/isFunction f) (satisfies? Fn f)))
@@ -1042,26 +1019,30 @@ reduces them without incurring seq initialization"
         (-invoke [_ & args]
           (apply o args)))
       meta)
-    (-with-meta o meta)))
+    (when-not (nil? o)
+      (-with-meta o meta))))
 
 (defn meta
   "Returns the metadata of obj, returns nil if there is no metadata."
   [o]
-  (when (satisfies? IMeta o)
+  (when (and (not (nil? o))
+             (satisfies? IMeta o))
     (-meta o)))
 
 (defn peek
   "For a list or queue, same as first, for a vector, same as, but much
   more efficient than, last. If the collection is empty, returns nil."
   [coll]
-  (-peek coll))
+  (when-not (nil? coll)
+    (-peek coll)))
 
 (defn pop
   "For a list or queue, returns a new list/queue without the first
   item, for a vector, returns a new vector without the last item.
   Note - not the same as next/butlast."
   [coll]
-  (-pop coll))
+  (when-not (nil? coll)
+    (-pop coll)))
 
 (defn disj
   "disj[oin]. Returns a new set of the same (hashed/sorted) type, that
@@ -1070,10 +1051,11 @@ reduces them without incurring seq initialization"
   ([coll k]
      (-disjoin coll k))
   ([coll k & ks]
-     (let [ret (disj coll k)]
-       (if ks
-         (recur ret (first ks) (next ks))
-         ret))))
+    (when-not (nil? coll)
+      (let [ret (disj coll k)]
+        (if ks
+          (recur ret (first ks) (next ks))
+          ret)))))
 
 ;; Simple caching of string hashcode
 (def string-hash-cache (js-obj))
@@ -1109,6 +1091,8 @@ reduces them without incurring seq initialization"
     (string? o)
     (check-string-hash-cache o)
 
+    (nil? o) 0
+
     :else
     (-hash o)))
 
@@ -1139,6 +1123,10 @@ reduces them without incurring seq initialization"
 (defn ^boolean sequential?
   "Returns true if coll satisfies ISequential"
   [x] (satisfies? ISequential x))
+
+(defn ^boolean sorted?
+  "Returns true if coll satisfies ISorted"
+  [x] (satisfies? ISorted x))
 
 (defn ^boolean reduceable?
   "Returns true if coll satisfies IReduce"
@@ -1268,6 +1256,14 @@ reduces them without incurring seq initialization"
      false)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; Seq fns ;;;;;;;;;;;;;;;;
+
+(defn ^seq sequence
+  "Coerces coll to a (possibly empty) sequence, if it is not already
+  one. Will not force a lazy seq. (sequence nil) yields ()"
+  [coll]
+   (if (seq? coll)
+     coll
+     (or (seq coll) ())))
 
 (defn ^number compare
   "Comparator. Returns a negative number, zero, or a positive number
@@ -1420,7 +1416,9 @@ reduces them without incurring seq initialization"
   and f is not called. Note that reduce-kv is supported on vectors,
   where the keys will be the ordinals."
   ([f init coll]
-     (-kv-reduce coll f init)))
+    (if-not (nil? coll)
+      (-kv-reduce coll f init)
+      init)))
 
 ;;; Math - variadic forms will not work until the following implemented:
 ;;; first, next, reduce
@@ -1504,7 +1502,7 @@ reduces them without incurring seq initialization"
        (cljs.core/>= y (first more)))
      false)))
 
-(defn ^number dec
+(defn dec
   "Returns a number one less than num."
   [x] (- x 1))
 
@@ -1556,10 +1554,10 @@ reduces them without incurring seq initialization"
   ([x y] (cljs.core/unchecked-add-int x y))
   ([x y & more] (reduce unchecked-add-int (cljs.core/unchecked-add-int x y) more)))
 
-(defn ^number unchecked-dec [x]
+(defn unchecked-dec [x]
   (cljs.core/unchecked-dec x))
 
-(defn ^number unchecked-dec-int [x]
+(defn unchecked-dec-int [x]
   (cljs.core/unchecked-dec-int x))
 
 (defn ^number unchecked-divide-int
@@ -1569,10 +1567,10 @@ reduces them without incurring seq initialization"
   ([x y] (cljs.core/divide x y)) ;; FIXME: waiting on cljs.core//
   ([x y & more] (reduce unchecked-divide-int (unchecked-divide-int x y) more)))
 
-(defn ^number unchecked-inc [x]
+(defn unchecked-inc [x]
   (cljs.core/unchecked-inc x))
 
-(defn ^number unchecked-inc-int [x]
+(defn unchecked-inc-int [x]
   (cljs.core/unchecked-inc-int x))
 
 (defn ^number unchecked-multiply
@@ -1589,15 +1587,15 @@ reduces them without incurring seq initialization"
   ([x y] (cljs.core/unchecked-multiply-int x y))
   ([x y & more] (reduce unchecked-multiply-int (cljs.core/unchecked-multiply-int x y) more)))
 
-(defn ^number unchecked-negate [x]
+(defn unchecked-negate [x]
   (cljs.core/unchecked-negate x))
 
-(defn ^number unchecked-negate-int [x]
+(defn unchecked-negate-int [x]
   (cljs.core/unchecked-negate-int x))
 
 (declare mod)
 
-(defn ^number unchecked-remainder-int [x n]
+(defn unchecked-remainder-int [x n]
   (cljs.core/unchecked-remainder-int x n))
 
 (defn ^number unchecked-substract
@@ -1619,22 +1617,22 @@ reduces them without incurring seq initialization"
     (Math/floor q)
     (Math/ceil q)))
 
-(defn ^number int
+(defn int
   "Coerce to int by stripping decimal places."
   [x]
   (bit-or x 0))
 
-(defn ^number unchecked-int
+(defn unchecked-int
   "Coerce to int by stripping decimal places."
   [x]
   (fix x))
 
-(defn ^number long
+(defn long
   "Coerce to long by stripping decimal places. Identical to `int'."
   [x]
   (fix x))
 
-(defn ^number unchecked-long
+(defn unchecked-long
   "Coerce to long by stripping decimal places. Identical to `int'."
   [x]
   (fix x))
@@ -1648,23 +1646,23 @@ reduces them without incurring seq initialization"
 (defn doubles [x] x)
 (defn longs [x] x)
 
-(defn ^number js-mod
+(defn js-mod
   "Modulus of num and div with original javascript behavior. i.e. bug for negative numbers"
   [n d]
   (cljs.core/js-mod n d))
 
-(defn ^number mod
+(defn mod
   "Modulus of num and div. Truncates toward negative infinity."
   [n d]
   (js-mod (+ (js-mod n d) d) d))
 
-(defn ^number quot
+(defn quot
   "quot[ient] of dividing numerator by denominator."
   [n d]
   (let [rem (js-mod n d)]
     (fix (/ (- n rem) d))))
 
-(defn ^number rem
+(defn rem
   "remainder of dividing numerator by denominator."
   [n d]
   (let [q (quot n d)]
@@ -1675,67 +1673,67 @@ reduces them without incurring seq initialization"
   ([]  (Math/random))
   ([n] (* n (rand))))
 
-(defn ^number rand-int
+(defn rand-int
   "Returns a random integer between 0 (inclusive) and n (exclusive)."
   [n] (fix (rand n)))
 
-(defn ^number bit-xor
+(defn bit-xor
   "Bitwise exclusive or"
   [x y] (cljs.core/bit-xor x y))
 
-(defn ^number bit-and
+(defn bit-and
   "Bitwise and"
   [x y] (cljs.core/bit-and x y))
 
-(defn ^number bit-or
+(defn bit-or
   "Bitwise or"
   [x y] (cljs.core/bit-or x y))
 
-(defn ^number bit-and-not
+(defn bit-and-not
   "Bitwise and"
   [x y] (cljs.core/bit-and-not x y))
 
-(defn ^number bit-clear
+(defn bit-clear
   "Clear bit at index n"
   [x n]
   (cljs.core/bit-clear x n))
 
-(defn ^number bit-flip
+(defn bit-flip
   "Flip bit at index n"
   [x n]
   (cljs.core/bit-flip x n))
 
-(defn ^number bit-not
+(defn bit-not
   "Bitwise complement"
   [x] (cljs.core/bit-not x))
 
-(defn ^number bit-set
+(defn bit-set
   "Set bit at index n"
   [x n]
   (cljs.core/bit-set x n))
 
-(defn ^number bit-test
+(defn bit-test
   "Test bit at index n"
   [x n]
   (cljs.core/bit-test x n))
 
-(defn ^number bit-shift-left
+(defn bit-shift-left
   "Bitwise shift left"
   [x n] (cljs.core/bit-shift-left x n))
 
-(defn ^number bit-shift-right
+(defn bit-shift-right
   "Bitwise shift right"
   [x n] (cljs.core/bit-shift-right x n))
 
-(defn ^number bit-shift-right-zero-fill
+(defn bit-shift-right-zero-fill
   "DEPRECATED: Bitwise shift right with zero fill"
   [x n] (cljs.core/bit-shift-right-zero-fill x n))
 
-(defn ^number unsigned-bit-shift-right
+(defn unsigned-bit-shift-right
   "Bitwise shift right with zero fill"
   [x n] (cljs.core/unsigned-bit-shift-right x n))
 
-(defn ^number bit-count
+(defn bit-count
   "Counts the number of bits set in n"
   [v]
   (let [v (- v (bit-and (bit-shift-right v 1) 0x55555555))
@@ -6633,18 +6631,22 @@ reduces them without incurring seq initialization"
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; Printing ;;;;;;;;;;;;;;;;
 
 (defn pr-sequential-writer [writer print-one begin sep end opts coll]
-  (-write writer begin)
-  (when (seq coll)
-    (print-one (first coll) writer opts))
-  (loop [coll (next coll) n (:print-length opts)]
-    (when (and coll (or (nil? n) (not (zero? n))))
-      (-write writer sep)
-      (print-one (first coll) writer opts)
-      (recur (next coll) (dec n))))
-  (when (:print-length opts)
-    (-write writer sep)
-    (print-one "..." writer opts))
-  (-write writer end))
+  (binding [*print-level* (when-not (nil? *print-level*) (dec *print-level*))]
+    (if (and (not (nil? *print-level*)) (neg? *print-level*))
+      (-write writer "#")
+      (do
+        (-write writer begin)
+        (when (seq coll)
+          (print-one (first coll) writer opts))
+        (loop [coll (next coll) n (:print-length opts)]
+          (when (and coll (or (nil? n) (not (zero? n))))
+            (-write writer sep)
+            (print-one (first coll) writer opts)
+            (recur (next coll) (dec n))))
+        (when (:print-length opts)
+          (-write writer sep)
+          (print-one "..." writer opts))
+        (-write writer end)))))
 
 (defn write-all [writer & ss]
   (doseq [s ss]
@@ -6673,6 +6675,8 @@ reduces them without incurring seq initialization"
        (.replace s (js/RegExp "[\\\\\"\b\f\n\r\t]" "g")
          (fn [match] (aget char-escapes match)))
        \"))
+
+(declare print-map)
 
 (defn- pr-writer
   "Prefer this to pr-seq, because it makes the printing function
@@ -6703,8 +6707,15 @@ reduces them without incurring seq initialization"
               (or (identical? (type obj) js/Boolean) (number? obj))
               (-write writer (str obj))
 
+              (object? obj)
+              (do
+                (-write writer "#js ")
+                (print-map
+                  (map (fn [k] [(keyword k) (aget obj k)]) (js-keys obj))
+                  pr-writer writer opts))
+
               (array? obj)
-              (pr-sequential-writer writer pr-writer "#<Array [" ", " "]>" opts obj)
+              (pr-sequential-writer writer pr-writer "#js [" " " "]" opts obj)
 
               ^boolean (goog/isString obj)
               (if (:readably opts)
@@ -6828,6 +6839,16 @@ reduces them without incurring seq initialization"
   (when *print-newline*
     (newline (pr-opts))))
 
+(defn print-map [m print-one writer opts]
+  (pr-sequential-writer
+    writer
+    (fn [e w opts]
+      (do (print-one (key e) w opts)
+          (-write w \space)
+          (print-one (val e) w opts)))
+    "{" ", " "}"
+    opts (seq m)))
+
 (extend-protocol IPrintWithWriter
   LazySeq
   (-pr-writer [coll writer opts] (pr-sequential-writer writer pr-writer "(" " " ")" opts coll))
@@ -6879,8 +6900,7 @@ reduces them without incurring seq initialization"
 
   ObjMap
   (-pr-writer [coll writer opts]
-    (let [pr-pair (fn [keyval] (pr-sequential-writer writer pr-writer "" " " "" opts keyval))]
-      (pr-sequential-writer writer pr-pair "{" ", " "}" opts coll)))
+    (print-map coll pr-writer writer opts))
 
   KeySeq
   (-pr-writer [coll writer opts] (pr-sequential-writer writer pr-writer "(" " " ")" opts coll))
@@ -6893,18 +6913,15 @@ reduces them without incurring seq initialization"
 
   PersistentArrayMap
   (-pr-writer [coll writer opts]
-    (let [pr-pair (fn [keyval] (pr-sequential-writer writer pr-writer "" " " "" opts keyval))]
-      (pr-sequential-writer writer pr-pair "{" ", " "}" opts coll)))
+    (print-map coll pr-writer writer opts))
 
   PersistentHashMap
   (-pr-writer [coll writer opts]
-    (let [pr-pair (fn [keyval] (pr-sequential-writer writer pr-writer "" " " "" opts keyval))]
-      (pr-sequential-writer writer pr-pair "{" ", " "}" opts coll)))
+    (print-map coll pr-writer writer opts))
 
   PersistentTreeMap
   (-pr-writer [coll writer opts]
-    (let [pr-pair (fn [keyval] (pr-sequential-writer writer pr-writer "" " " "" opts keyval))]
-      (pr-sequential-writer writer pr-pair "{" ", " "}" opts coll)))
+    (print-map coll pr-writer writer opts))
 
   PersistentHashSet
   (-pr-writer [coll writer opts] (pr-sequential-writer writer pr-writer "#{" " " "}" opts coll))
@@ -6982,11 +6999,13 @@ reduces them without incurring seq initialization"
   "Sets the value of atom to newval without regard for the
   current value. Returns newval."
   [a new-value]
-  (when-let [validate (.-validator a)]
-    (assert (validate new-value) "Validator rejected reference state"))
+  (let [validate (.-validator a)]
+    (when-not (nil? validate)
+      (assert (validate new-value) "Validator rejected reference state")))
   (let [old-value (.-state a)]
     (set! (.-state a) new-value)
-    (-notify-watches a old-value new-value))
+    (when-not (nil? (.-watches a))
+      (-notify-watches a old-value new-value)))
   new-value)
 
 (defn swap!
@@ -7162,7 +7181,10 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
                     (doseq [[k v] x]
                       (aset m (key->js k) (clj->js v)))
                     m)
-         (coll? x) (apply array (map clj->js x))
+         (coll? x) (let [arr (array)]
+                     (doseq [x (map clj->js x)]
+                       (.push arr x))
+                     arr)
          :else x))))
 
 (defprotocol IEncodeClojure
