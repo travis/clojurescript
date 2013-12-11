@@ -8,7 +8,4 @@
 (def process (js* "process"))
 
 ; Have ClojureScript print using Node's sys.print function
-(try
-  (set! cljs.core/string-print (.-print (require "util")))
-  (catch :default e
-    (.log js/console (str "Not setting up node.js logging: " (.-message e)))))
+(set! cljs.core/string-print (.-print (require "util")))
