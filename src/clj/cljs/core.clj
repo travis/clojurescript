@@ -290,7 +290,7 @@
 
 (defmacro array? [x]
   (if (= :nodejs (:target @env/*compiler*))
-    (bool-expr `(Array/isArray ~x))
+    (bool-expr `(.isArray js/Array ~x))
     (bool-expr (core/list 'js* "~{} instanceof Array" x))))
 
 (defmacro string? [x]
